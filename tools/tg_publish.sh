@@ -4,9 +4,6 @@
 #   TELEGRAM_BOT_TOKEN=xxx TELEGRAM_CHAT_ID=-100xxx ./tg_publish.sh ARCHIVO "caption"
 set -euo pipefail
 
-# Forzar locale UTF-8: en Windows runners, Git Bash a veces arranca en
-# locale C/POSIX y eso corrompe la codificación de emojis/tildes al pasar
-# por argv hacia curl, causando "strings must be encoded in UTF-8".
 export LANG="${LANG:-C.UTF-8}"
 export LC_ALL="${LC_ALL:-C.UTF-8}"
 
@@ -23,14 +20,10 @@ if [ ! -f "$FILE_ARG" ]; then
   exit 0
 fi
 
-# Resolver a ruta absoluta: en Windows/Git Bash, curl (nativo o de Git)
-# puede fallar con "(26) Failed to open/read local data from file" si el
-# working directory de curl no coincide exactamente con el del script al
-# usar rutas relativas. Con ruta absoluta se elimina esa ambigüedad.
+# Ruta absoluta: evita "curl (26) Failed to open/read local data" en
+# Windows/Git Bash cuando curl.exe y bash no comparten el mismo cwd.
 FILE="$(cd "$(dirname "$FILE_ARG")" && pwd)/$(basename "$FILE_ARG")"
 
-# Verificación explícita de que el archivo es legible con esa ruta absoluta,
-# para dar un error claro en vez del críptico curl (26) si algo sigue mal.
 if [ ! -r "$FILE" ]; then
   echo "❌ No se puede leer el archivo en ruta absoluta: $FILE"
   exit 1
@@ -41,17 +34,26 @@ echo "   (tamaño: $(wc -c < "$FILE") bytes)"
 
 TMPLOG="$(mktemp /tmp/tg_publish.XXXXXX.log)"
 
-# --form-string para el caption: envía el valor literal sin que curl lo
-# reinterprete (evita el error "strings must be encoded in UTF-8" causado
-# por locale incorrecto en versiones previas de este script).
+# El caption se escribe a un archivo en disco en vez de pasarlo por argv.
+# En Windows, el proceso curl.exe (nativo o de Git) recibe los argumentos
+# de línea de comandos a través de la API de Windows como una sola cadena
+# que cada ejecutable reparsea con su propia rutina de C runtime; esa capa
+# no siempre preserva bytes UTF-8 multi-byte (emojis, tildes) intactos.
+# Escribiendo el caption a archivo con printf y leyéndolo con curl -F
+# "campo=<archivo" evitamos ese paso de argv por completo: curl lee los
+# bytes directo del archivo, tal cual fueron escritos por bash.
+CAPTION_FILE="$(mktemp /tmp/tg_caption.XXXXXX.txt)"
+printf '%s' "$CAPTION" > "$CAPTION_FILE"
+
 RESP="$(curl -sS --max-time 600 --retry 3 --retry-delay 5 --connect-timeout 20 \
   -F "chat_id=${TELEGRAM_CHAT_ID}" \
-  -F "document=@${FILE}" \
   -F "parse_mode=Markdown" \
-  --form-string "caption=${CAPTION}" \
+  -F "caption=<${CAPTION_FILE}" \
+  -F "document=@${FILE}" \
   "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" 2>&1 | tee "$TMPLOG" || true)"
 
-# show short preview
+rm -f "$CAPTION_FILE"
+
 if echo "$RESP" | grep -q '"ok":true'; then
   echo "✅ Publicado en Telegram: $FILE"
   echo "Respuesta (ultimo 300 bytes):"
@@ -61,5 +63,4 @@ else
   echo "⚠️  Telegram respondió (o curl falló). Ver log en $TMPLOG"
   echo "Salida breve:"
   echo "$RESP" | head -c 500
-  # keep TMPLOG for debugging
 fi
