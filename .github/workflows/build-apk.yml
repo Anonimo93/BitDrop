@@ -11,7 +11,7 @@ on:
 jobs:
   build:
     name: Compilar APK (Kivy + Buildozer)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout del repositorio
         uses: actions/checkout@v4
@@ -23,11 +23,12 @@ jobs:
         id: version
         run: echo "apk_version=$(grep '^version' android/buildozer.spec | awk -F'= ' '{print $2}')" >> "$GITHUB_OUTPUT"
 
-      - name: Compilar con Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        with:
-          command: cd android && buildozer android debug
-          buildozer_version: stable
+      - name: Compilar con Buildozer (contenedor oficial, sin PPA roto)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/android:/home/user/hostcwd" \
+            ghcr.io/kivy/buildozer:latest \
+            android debug
 
       - name: Renombrar APK (nombre limpio)
         run: |
