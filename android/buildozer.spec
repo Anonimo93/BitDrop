@@ -16,14 +16,7 @@ version = 1.0
 # Librerías: pyzipper es Python puro; pycryptodomex solo se necesita
 # para el modo 3 (ZIP AES). Si el build falla con pycryptodomex, quítala:
 # la app seguirá funcionando para modos 0/1/2.
-#
-# hostpython3==3.11.9,python3==3.11.9: fijamos la versión de Python que
-# python-for-android compila internamente (hostpython) y empaqueta en el
-# APK. Sin esto, p4a master compila la última versión de Python disponible
-# (actualmente 3.14), cuyo ensurepip genera un pip incompatible con el
-# propio código de p4a (ImportError: BuildDependencyInstallError). 3.11
-# es una versión ampliamente probada y estable con el toolchain actual.
-requirements = hostpython3==3.11.9,python3==3.11.9,kivy,requests,beautifulsoup4,pyzipper,pycryptodomex,urllib3,certifi
+requirements = python3,kivy,requests,beautifulsoup4,pyzipper,pycryptodomex,urllib3,certifi
 
 orientation = portrait
 fullscreen = 0
@@ -45,7 +38,15 @@ android.archs = arm64-v8a, armeabi-v7a
 # Mantener en segundo plano no es necesario
 android.allow_backup = True
 
-p4a.branch = master
+# Fijamos p4a a la última release oficial en PyPI (2026.5.9) en vez de la
+# punta de "master". La rama master de python-for-android está en
+# desarrollo activo y actualmente su recipe hostpython3 ejecuta
+# "pip install -U pip" sin fijar versión (build.py: run_pymodules_install),
+# lo que descarga la última versión de pip de PyPI y rompe con
+# "ImportError: cannot import name 'open_rich_spinner'" por un desajuste
+# interno entre esa versión de pip y el resto del entorno. Un release
+# etiquetado es un snapshot estable que no cambia bajo nuestros pies.
+p4a.branch = v2026.05.09
 
 [buildozer]
 
