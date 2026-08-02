@@ -42,10 +42,10 @@ jobs:
           path: android/bin/BitDrop-v${{ steps.version.outputs.apk_version }}.apk
 
       - name: "📤 Publicar APK en Telegram"
-        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '' }}
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
         shell: bash
         run: |
           chmod +x tools/tg_publish.sh
