@@ -38,6 +38,8 @@ android.archs = arm64-v8a, armeabi-v7a
 # Mantener en segundo plano no es necesario
 android.allow_backup = True
 
+p4a.branch = master
+
 [buildozer]
 
 log_level = 2
