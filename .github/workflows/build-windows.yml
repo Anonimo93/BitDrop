@@ -38,11 +38,11 @@ jobs:
           path: dist/BitDrop.exe
 
       - name: "📤 Publicar .exe en Telegram"
-        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '' }}
-        shell: bash
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        if: ${{ env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != '' }}
+        shell: bash
         run: |
           chmod +x tools/tg_publish.sh
           CAPTION=$'🪟 **BitDrop Windows** — nueva compilación\nBuild: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
