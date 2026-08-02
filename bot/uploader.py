@@ -1,12 +1,5 @@
 """
-uploader.py — RevistaUploader con correcciones.
-
-Fixes aplicados:
-  - BUG-05: trackea original_size además del tamaño subido, para que la URL
-    final lleve el tamaño original (no el camuflado).
-  - BUG-06: cleanup garantizado de temporales en bloque finally.
-  - BUG-08: refresca CSRF antes de cada subida + retry en 403.
-  - BUG-07: si hay múltiples archivos, los empaqueta en .tar antes de subir.
+uploader.py — RevistaUploader con correcciones y soporte de progreso.
 """
 from __future__ import annotations
 
@@ -15,10 +8,11 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import requests
 from bs4 import BeautifulSoup
+from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncoderMonitor
 
 from config import config
 from encoder import BitZeroEncoder
@@ -29,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class RevistaUploader:
-    """Uploader a OJS con soporte BitZero completo."""
+    """Uploader a OJS con soporte BitZero completo y reporting de progreso."""
 
     def __init__(self, username: str, password: str, submission_id: str,
                  base_url: str, contexto: str, bitzero_mode: int = 0,
@@ -47,8 +41,6 @@ class RevistaUploader:
             'Connection': 'keep-alive',
         })
         # Verificación TLS configurable (TLS_VERIFY=1 en .env para activarla).
-        # Las revistas cubanas suelen tener cert self-signed, por eso el
-        # default es NO verificar (comportamiento heredado).
         self.session.verify = config.TLS_VERIFY
 
         self.csrf_token: Optional[str] = None
@@ -130,9 +122,7 @@ class RevistaUploader:
 
     # ── Navegación + refresh CSRF ────────────────────────────────────
     def navigate_to_step_2(self) -> bool:
-        """Navega al paso 2 del wizard y refresca el CSRF.
-        BUG-08 fix: se debe llamar ANTES de cada POST de subida.
-        """
+        """Navega al paso 2 del wizard y refresca el CSRF."""
         if not self.submission_id:
             return False
         try:
@@ -154,8 +144,7 @@ class RevistaUploader:
 
     # ── Preparación de archivo ───────────────────────────────────────
     def _prepare_file_for_upload(self, file_path: str, user_id: int) -> Optional[str]:
-        """Aplica camuflaje BitZero. Devuelve ruta del archivo a subir
-        (puede ser el original o el camuflado). None si falla."""
+        """Aplica camuflaje BitZero. Devuelve ruta del archivo a subir."""
         if self.bitzero_mode == 0:
             return file_path
         camouflaged = BitZeroEncoder.apply_camouflage(
@@ -175,15 +164,11 @@ class RevistaUploader:
             return camouflaged
         return file_path
 
-    # ── Subida individual (BUG-05, BUG-06, BUG-08 fixes) ─────────────
+    # ── Subida individual (ahora acepta progress_callback) ───────────
     def upload_file(self, file_path: str, original_name: Optional[str] = None,
-                    user_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
-        """Sube un archivo. Devuelve dict con info del archivo subido o None.
-
-        BUG-06 fix: limpieza garantizada del temporal en finally.
-        BUG-08 fix: CSRF refrescado antes de cada subida + retry en 403.
-        BUG-05 fix: registra original_size además del tamaño subido.
-        """
+                    user_id: Optional[int] = None,
+                    progress_callback: Optional[Callable[[int, int], None]] = None) -> Optional[Dict[str, Any]]:
+        """Sube un archivo. Devuelve dict con info del archivo subido o None."""
         if not os.path.exists(file_path):
             logger.error(f"Archivo no existe: {file_path}")
             return None
@@ -192,12 +177,12 @@ class RevistaUploader:
             logger.error("No se pudo iniciar sesión")
             return None
 
-        # BUG-08 fix: refrescar CSRF en cada subida
+        # Refrescar CSRF antes de la subida
         if not self.navigate_to_step_2():
             logger.error("No se pudo navegar al paso 2 (refresh CSRF)")
             return None
 
-        # Tamaño ORIGINAL antes del camuflaje (BUG-05 fix)
+        # Tamaño ORIGINAL antes del camuflaje
         original_size = os.path.getsize(file_path)
 
         upload_path = self._prepare_file_for_upload(file_path, user_id or 0)
@@ -210,24 +195,17 @@ class RevistaUploader:
             file_name = os.path.basename(upload_path)
         content_type = self._content_type(file_name)
 
-        # BUG-06 fix: try/finally para garantizar limpieza
         try:
-            try:
-                with open(upload_path, 'rb') as f:
-                    file_content = f.read()
-            except Exception as e:
-                logger.error(f"Error leyendo archivo: {e}")
-                return None
-
             file_info = self._do_upload_request(
                 file_name=file_name,
-                file_content=file_content,
+                file_path=upload_path,
                 content_type=content_type,
+                progress_callback=progress_callback,
             )
             if not file_info:
                 return None
 
-            # Completar con tamaños (BUG-05 fix)
+            # Completar con tamaños
             file_info['original_size'] = original_size
             file_info['original_name'] = original_name or os.path.basename(file_path)
             file_info['size'] = os.path.getsize(upload_path)
@@ -237,7 +215,7 @@ class RevistaUploader:
             return file_info
 
         finally:
-            # BUG-06 fix: SIEMPRE limpiar temporal
+            # Siempre limpiar temporal
             if is_temp and upload_path and os.path.exists(upload_path):
                 try:
                     os.remove(upload_path)
@@ -245,31 +223,56 @@ class RevistaUploader:
                 except OSError as e:
                     logger.warning(f"No se pudo limpiar temporal {upload_path}: {e}")
 
-    def _do_upload_request(self, file_name: str, file_content: bytes,
-                           content_type: str) -> Optional[Dict[str, Any]]:
-        """Hace el POST de subida con retry en 403 (CSRF expirado)."""
+    def _do_upload_request(self, file_name: str, file_path: str,
+                           content_type: str,
+                           progress_callback: Optional[Callable[[int, int], None]] = None) -> Optional[Dict[str, Any]]:
+        """Hace el POST de subida usando MultipartEncoderMonitor y notifica progress_callback(bytes_sent, total_bytes)."""
         api_url = (f"{self.base_url}/index.php/{self.contexto}/api/v1/submissions/"
                    f"{self.submission_id}/files")
         referer = (f"{self.base_url}/index.php/{self.contexto}/submission/wizard/2"
                    f"?submissionId={self.submission_id}")
 
-        for attempt in range(2):  # máximo 2 intentos (original + retry por 403)
+        # Intentos: 2 (original + retry si 403 CSRF)
+        for attempt in range(2):
             headers = {
                 'X-Csrf-Token': self.csrf_token or '',
                 'Referer': referer,
             }
-            files = {'file': (file_name, file_content, content_type)}
-            data = {
-                'name[es_ES]': file_name,
-                'fileStage': '2',
-                'csrfToken': self.csrf_token or '',
-            }
+
+            # Abrir archivo y preparar encoder
+            fobj = None
             try:
-                resp = self.session.post(api_url, files=files, data=data,
-                                         headers=headers, timeout=120)
+                fobj = open(file_path, 'rb')
+                fields = {
+                    'file': (file_name, fobj, content_type),
+                    'name[es_ES]': file_name,
+                    'fileStage': '2',
+                    'csrfToken': self.csrf_token or '',
+                }
+                encoder = MultipartEncoder(fields=fields)
+
+                def _monitor_callback(monitor):
+                    if progress_callback:
+                        try:
+                            progress_callback(monitor.bytes_read, monitor.len)
+                        except Exception:
+                            # Nunca dejar que un callback rompa la subida
+                            pass
+
+                monitor = MultipartEncoderMonitor(encoder, _monitor_callback)
+                hdrs = headers.copy()
+                hdrs['Content-Type'] = monitor.content_type
+
+                resp = self.session.post(api_url, data=monitor, headers=hdrs, timeout=600)
             except Exception as e:
                 logger.error(f"POST upload error (intent {attempt+1}): {e}")
                 return None
+            finally:
+                if fobj:
+                    try:
+                        fobj.close()
+                    except Exception:
+                        pass
 
             if resp.status_code == 200:
                 try:
@@ -293,7 +296,6 @@ class RevistaUploader:
                 }
 
             if resp.status_code == 403 and attempt == 0:
-                # BUG-08 fix: CSRF expirado, re-login y retry
                 logger.warning("403 CSRF rechazado, re-logueando y reintentando...")
                 self.is_logged_in = False
                 if self.ensure_logged_in() and self.navigate_to_step_2():
@@ -305,23 +307,37 @@ class RevistaUploader:
 
         return None
 
-    # ── Subida con chunking ──────────────────────────────────────────
-    def upload_chunked_file(self, file_path: str, user_id: int) -> List[Dict[str, Any]]:
+    # ── Subida con chunking (ahora acepta progress_callback acumulado) ─
+    def upload_chunked_file(self, file_path: str, user_id: int,
+                            progress_callback: Optional[Callable[[int, int], None]] = None) -> List[Dict[str, Any]]:
         file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
 
         if file_size <= self.chunk_size:
-            result = self.upload_file(file_path, user_id=user_id)
+            result = self.upload_file(file_path, user_id=user_id, progress_callback=progress_callback)
             return [result] if result else []
 
         chunks = self._split_file(file_path)
         uploaded: List[Dict[str, Any]] = []
+        cumulative_before = 0
         for idx, chunk in enumerate(chunks, 1):
             chunk_name = f"{file_name}.part{idx:03d}"
-            result = self.upload_file(chunk['path'], chunk_name, user_id)
+
+            # crear callback que acumule el progreso y lo transforme a escala del archivo total
+            def make_chunk_progress_cb(cumulative_offset, chunk_size):
+                def _cb(sent_bytes, chunk_total):
+                    if progress_callback:
+                        # convertir a progreso acumulado sobre file_size
+                        overall_sent = cumulative_offset + sent_bytes
+                        progress_callback(overall_sent, file_size)
+                return _cb
+
+            chunk_progress_cb = make_chunk_progress_cb(cumulative_before, chunk['size'])
+            result = self.upload_file(chunk['path'], chunk_name, user_id, progress_callback=chunk_progress_cb)
             if result:
                 uploaded.append(result)
                 logger.info(f"Chunk {idx}/{len(chunks)} subido: {chunk_name}")
+            cumulative_before += chunk['size']
             # Limpiar chunk temporal
             if os.path.exists(chunk['path']):
                 try:
@@ -401,4 +417,4 @@ class RevistaUploader:
                                        for f in self.uploaded_files),
             'file_ids': [f['id'] for f in self.uploaded_files],
             'original_names': [f.get('original_name', '') for f in self.uploaded_files],
-        }
+                   }
