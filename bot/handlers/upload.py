@@ -1,14 +1,10 @@
 """
-handlers/upload.py — Orquestador de subidas BitZero.
-
-Mejoras:
-  - Si LOG_CHANNEL_ID está configurado, envía un mensaje de log al canal
-    por cada subida completada (con URL BitZero, usuario, revista, tamaño).
-  - Cache de uploaders por revista con invalidación.
+handlers/upload.py — Orquestador de subidas BitZero con barra de progreso.
 """
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -150,19 +146,64 @@ async def perform_upload_with_bitzero(client, message, uploader: RevistaUploader
             0: '❌', 1: '🖼️ PNG', 2: '🌐 HTML', 3: '📦 ZIP'
         }.get(uploader.bitzero_mode, '❌')
 
+        # mensaje inicial
         await message.edit_text(
-            f"📤 **Subiendo**\n\n"
+            f"📤 **Preparando**\n\n"
             f"📂 Progreso: {idx}/{len(files_to_upload_processed)}\n"
             f"📄 {file_name}\n"
             f"💾 {format_size(file_size)}\n"
             f"🔐 BitZero: {bitzero_info}\n"
-            f"⏳ Procesando..."
+            f"⏳ Preparando subida..."
         )
 
+        loop = asyncio.get_running_loop()
+        last_update_ts = 0.0
+
+        def make_progress_callback():
+            """Crea un callback que puede ser llamado desde el thread de requests."""
+            nonlocal last_update_ts
+            def progress_cb(sent_bytes: int, total_bytes: int):
+                nonlocal last_update_ts
+                try:
+                    now_ts = time.time()
+                    # throttle updates a 0.5s para no spamear edits
+                    if now_ts - last_update_ts < 0.5:
+                        return
+                    last_update_ts = now_ts
+                    percent = int((sent_bytes * 100) / total_bytes) if total_bytes else 0
+                    bar_len = 20
+                    filled = int(percent * bar_len / 100)
+                    bar = '█' * filled + '─' * (bar_len - filled)
+                    txt = (
+                        f"📤 **Subiendo**\n\n"
+                        f"📂 Progreso: {idx}/{len(files_to_upload_processed)}\n"
+                        f"📄 {file_name}\n"
+                        f"{bar} {percent}%\n"
+                        f"💾 {format_size(sent_bytes)} / {format_size(total_bytes)}\n"
+                        f"🔐 BitZero: {bitzero_info}\n"
+                        f"⏳ Subiendo..."
+                    )
+                    # Schedule the coroutine edit safely in the event loop
+                    def _do_edit():
+                        try:
+                            asyncio.create_task(message.edit_text(txt))
+                        except Exception:
+                            pass
+                    loop.call_soon_threadsafe(_do_edit)
+                except Exception:
+                    # never crash the upload thread due to UI update errors
+                    pass
+            return progress_cb
+
+        progress_callback = make_progress_callback()
+
+        # Ejecutar la subida en executor (no bloquear el event loop)
         if file_size > uploader.chunk_size:
-            uploaded = uploader.upload_chunked_file(file_path, user_id)
+            func = functools.partial(uploader.upload_chunked_file, file_path, user_id, progress_callback)
+            uploaded = await loop.run_in_executor(None, func)
         else:
-            result = uploader.upload_file(file_path, user_id=user_id)
+            func = functools.partial(uploader.upload_file, file_path, None, user_id, progress_callback)
+            result = await loop.run_in_executor(None, func)
             uploaded = [result] if result else []
 
         if uploaded:
