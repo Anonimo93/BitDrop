@@ -1,0 +1,37 @@
+# ── Python ─────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+
+# ── Secretos ───────────────────────────────────────────────────────
+.env
+*.env.local
+
+# ── Datos en runtime del bot ───────────────────────────────────────
+bot/data/
+bot/raiz/
+bot/logs/
+# (por si se lanza desde otra carpeta)
+raiz/
+logs/
+*.db
+*.db-wal
+*.db-shm
+# Build de la APK
+android/bin/
+android/.buildozer/
+android/.gradle/
+
+# ── Descargas / backups grandes ────────────────────────────────────
+downloader/BitZero/
+downloader/descargas/
+downloads/
+
+# ── SO / editores ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

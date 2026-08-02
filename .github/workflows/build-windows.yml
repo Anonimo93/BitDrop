@@ -1,0 +1,50 @@
+name: Build Windows
+
+on:
+  push:
+    paths:
+      - 'windows/**'
+      - 'downloader/bitzero.py'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compilar .exe (PyInstaller)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Sincronizar bitzero.py (versión del downloader)
+        shell: pwsh
+        run: Copy-Item downloader/bitzero.py windows/bitzero.py
+
+      - name: Instalar dependencias
+        run: pip install pyinstaller requests beautifulsoup4 urllib3 pyzipper
+
+      - name: Compilar con PyInstaller
+        run: pyinstaller --onefile --windowed --name BitDrop windows/bitdrop_win.py
+
+      - name: Subir .exe como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitdrop-windows
+          path: dist/BitDrop.exe
+
+      - name: 📤 Publicar .exe en Telegram
+        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '' }}
+        shell: bash
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          chmod +x tools/tg_publish.sh
+          ./tools/tg_publish.sh "dist/BitDrop.exe" \
+            "🪟 **BitDrop Windows** — nueva compilación
+Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

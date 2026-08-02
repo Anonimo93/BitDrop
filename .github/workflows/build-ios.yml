@@ -1,0 +1,68 @@
+name: Build iOS
+
+# ⚠️ REQUISITOS (léelo antes de activar):
+#   1. iOS NO se puede compilar en Linux/Windows: este workflow usa un
+#      runner macOS (gratis dentro de la cuota de Actions).
+#   2. Para instalar la app en un iPhone REAL necesitas:
+#      - Apple Developer Program (99 USD/año)
+#      - Certificado + provisioning profile + App ID
+#      - Añadir esos secretos al repo (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD,
+#        APPLE_PROVISIONING_PROFILE, etc.) y firmar en el paso xcodebuild.
+#   3. SIN firma solo obtienes un build para SIMULADOR (no instalable en
+#      dispositivo). Es útil para probar que compila.
+#   4. kivy-ios es un toolchain frágil y lento (~30-60 min el primer build).
+#      Si te da problemas, la alternativa práctica es la versión Windows/APK.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Compilar iOS (kivy-ios)
+    runs-on: macos-14
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Sincronizar bitzero.py (versión del downloader)
+        run: cp downloader/bitzero.py android/bitzero.py
+
+      - name: Instalar toolchain kivy-ios
+        run: |
+          python3 -m venv ~/kivyios
+          source ~/kivyios/bin/activate
+          pip install -U pip setuptools kivy-ios
+          toolchain build python3 kivy
+
+      - name: Crear proyecto Xcode
+        run: |
+          source ~/kivyios/bin/activate
+          # El 2º argumento es la carpeta con main.py (reutilizamos android/)
+          toolchain create BitDrop android
+
+      - name: Compilar (simulador, sin firma)
+        run: |
+          source ~/kivyios/bin/activate
+          cd BitDrop-ios
+          xcodebuild -project BitDrop.xcodeproj -scheme BitDrop \
+            -sdk iphonesimulator -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO build
+
+      # ── Para instalar en dispositivo real, descomenta y configura: ──
+      # - name: Firmar para dispositivo
+      #   run: |
+      #     source ~/kivyios/bin/activate
+      #     cd BitDrop-ios
+      #     xcodebuild -project BitDrop.xcodeproj -scheme BitDrop \
+      #       -sdk iphoneos -configuration Release \
+      #       DEVELOPMENT_TEAM=${{ secrets.APPLE_TEAM_ID }} \
+      #       CODE_SIGN_IDENTITY="Apple Development" build
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitdrop-ios-simulator
+          path: |
+            BitDrop-ios/build/**/*.app
+            BitDrop-ios/build/**/*.ipa
+          if-no-files-found: warn

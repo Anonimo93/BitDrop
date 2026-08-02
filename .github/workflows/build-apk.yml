@@ -1,0 +1,60 @@
+name: Build APK Android
+
+on:
+  push:
+    paths:
+      - 'android/**'
+      - 'downloader/bitzero.py'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:  # permite lanzarlo a mano desde la pestaña Actions
+
+jobs:
+  build:
+    name: Compilar APK (Kivy + Buildozer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Sincronizar bitzero.py (versión del downloader)
+        run: cp downloader/bitzero.py android/bitzero.py
+
+      - name: Definir versión de la app
+        id: version
+        run: echo "apk_version=$(grep '^version' android/buildozer.spec | awk -F'= ' '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar con Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        with:
+          command: cd android && buildozer android debug
+          buildozer_version: stable
+
+      - name: Renombrar APK (nombre limpio)
+        run: |
+          APK=$(ls android/bin/*.apk | head -n1)
+          mv "$APK" "android/bin/BitDrop-v${{ steps.version.outputs.apk_version }}.apk"
+          ls -la android/bin/
+
+      - name: Subir APK como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitdrop-apk
+          path: android/bin/BitDrop-v${{ steps.version.outputs.apk_version }}.apk
+
+      - name: 📤 Publicar APK en Telegram
+        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' && secrets.TELEGRAM_CHAT_ID != '' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          chmod +x tools/tg_publish.sh
+          ./tools/tg_publish.sh "android/bin/BitDrop-v${{ steps.version.outputs.apk_version }}.apk" \
+            "🆕 **BitDrop v${{ steps.version.outputs.apk_version }}** — nueva compilación Android
+Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      # Opcional: subir a la release si creas una tag vX.Y.Z
+      # - name: Subir a Release
+      #   if: startsWith(github.ref, 'refs/tags/')
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: android/bin/BitDrop-v${{ steps.version.outputs.apk_version }}.apk
