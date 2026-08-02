@@ -16,7 +16,14 @@ version = 1.0
 # Librerías: pyzipper es Python puro; pycryptodomex solo se necesita
 # para el modo 3 (ZIP AES). Si el build falla con pycryptodomex, quítala:
 # la app seguirá funcionando para modos 0/1/2.
-requirements = python3,kivy,requests,beautifulsoup4,pyzipper,pycryptodomex,urllib3,certifi
+#
+# hostpython3==3.11.9,python3==3.11.9: fijamos la versión de Python que
+# python-for-android compila internamente (hostpython) y empaqueta en el
+# APK. Sin esto, p4a master compila la última versión de Python disponible
+# (actualmente 3.14), cuyo ensurepip genera un pip incompatible con el
+# propio código de p4a (ImportError: BuildDependencyInstallError). 3.11
+# es una versión ampliamente probada y estable con el toolchain actual.
+requirements = hostpython3==3.11.9,python3==3.11.9,kivy,requests,beautifulsoup4,pyzipper,pycryptodomex,urllib3,certifi
 
 orientation = portrait
 fullscreen = 0
